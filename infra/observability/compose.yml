@@ -1,0 +1,112 @@
+name: c206-observability
+
+# 설정 파일의 bind mount 원본 경로. 기본값은 이 파일이 있는 디렉터리이므로 로컬에서
+# 직접 compose를 띄울 때는 신경 쓸 필요가 없다.
+#
+# Jenkins에서는 반드시 호스트 절대경로를 넘겨야 한다. Jenkins는 컨테이너인데 Docker
+# 데몬은 호스트 것이라, 워크스페이스 상대 경로를 쓰면 compose CLI가 Jenkins 컨테이너
+# 안의 경로(/var/jenkins_home/...)를 호스트 데몬에 넘긴다. 호스트에는 그 경로가 없어
+# Docker가 그 자리에 빈 디렉터리를 만들고, Loki는 디렉터리를 설정 파일로 읽으려다
+# 실패한다. deploy-observability.sh가 OBSERVABILITY_CONFIG_DIR로 이 값을 채운다.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+services:
+  loki:
+    image: grafana/loki:3.7.0
+    command: -config.file=/etc/loki/config.yml
+    restart: unless-stopped
+    volumes:
+      - ${OBSERVABILITY_CONFIG_DIR:-.}/loki.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    networks:
+      - observability
+    healthcheck:
+      test: ["CMD", "/usr/bin/loki", "-config.file=/etc/loki/config.yml", "-verify-config"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    logging: *default-logging
+
+  alloy:
+    image: grafana/alloy:v1.18.0
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    restart: unless-stopped
+    depends_on:
+      loki:
+        condition: service_healthy
+    volumes:
+      - ${OBSERVABILITY_CONFIG_DIR:-.}/alloy.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - observability
+    healthcheck:
+      test: ["CMD", "/bin/alloy", "fmt", "--test", "/etc/alloy/config.alloy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:12.4.0
+    restart: unless-stopped
+    depends_on:
+      loki:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: https://app.example.com/ops/logs/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ${OBSERVABILITY_CONFIG_DIR:-.}/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ${OBSERVABILITY_CONFIG_DIR:-.}/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - observability
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    logging: *default-logging
+
+volumes:
+  loki-data:
+  alloy-data:
+  grafana-data:
+
+networks:
+  observability:
+    name: mvp-observability
+    external: true

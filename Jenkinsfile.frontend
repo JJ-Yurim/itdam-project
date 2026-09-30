@@ -1,0 +1,301 @@
+def publishFrontendEvent(String stageName, String status, String level = 'INFO') {
+    if (!fileExists('scripts/publish-deploy-event.sh')) {
+        echo "Deployment event skipped before checkout: ${status}"
+        return
+    }
+    def payload = groovy.json.JsonOutput.toJson([
+        deploy_id: env.DEPLOY_ID ?: 'unknown',
+        commit: env.GIT_COMMIT_SHORT ?: 'unknown',
+        pipeline: 'frontend',
+        pipeline_stage: stageName,
+        status: status,
+        jenkins_url: env.BUILD_URL ?: 'unknown',
+        environment: env.DEPLOY_BRANCH ?: 'unknown',
+        level: level
+    ])
+    def shellPayload = payload.replace("'", "'\"'\"'")
+    sh "printf '%s' '${shellPayload}' | ./scripts/publish-deploy-event.sh"
+}
+
+pipeline {
+    agent any
+
+    options {
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        timeout(time: 20, unit: 'MINUTES')
+        timestamps()
+    }
+
+    parameters {
+        booleanParam(
+            name: 'FORCE_DEPLOY',
+            defaultValue: false,
+            description: 'Run Frontend verification, build, and deployment even when no Frontend path changed.'
+        )
+    }
+
+    environment {
+        FRONTEND_IMAGE = 'c206-frontend'
+        // 배포 이미지 정리에서 `reference=c206-frontend:*`로 걸러내야 하므로
+        // 검증 이미지는 태그가 아니라 저장소 이름으로 분리한다.
+        FRONTEND_VERIFY_IMAGE = 'c206-frontend-verify'
+        // 프론트엔드와 API가 같은 도메인이므로 상대 경로를 빌드에 인라인한다.
+        FRONTEND_API_BASE_URL = '/api'
+        // 롤백 대상으로 남겨둘 배포 이미지 개수.
+        FRONTEND_IMAGE_KEEP = '3'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    def scmVars = checkout scm
+                    def gitBranch = scmVars.GIT_BRANCH
+
+                    if (!gitBranch) {
+                        error("Unable to determine deployment branch from SCM: ${scmVars}")
+                    }
+
+                    env.DEPLOY_BRANCH = gitBranch
+                        .replaceFirst(/^refs\/remotes\/origin\//, '')
+                        .replaceFirst(/^origin\//, '')
+
+                    if (!(env.DEPLOY_BRANCH in ['main', 'develop'])) {
+                        error("Unsupported deployment branch: ${env.DEPLOY_BRANCH}")
+                    }
+
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short=8 HEAD',
+                        returnStdout: true
+                    ).trim()
+
+                    env.FRONTEND_IMAGE_TAG =
+                        "${env.FRONTEND_IMAGE}:${env.DEPLOY_BRANCH}-${env.GIT_COMMIT_SHORT}"
+
+                    env.FRONTEND_VERIFY_IMAGE_TAG =
+                        "${env.FRONTEND_VERIFY_IMAGE}:${env.DEPLOY_BRANCH}-${env.GIT_COMMIT_SHORT}"
+
+                    env.DEPLOY_ID =
+                        "${env.DEPLOY_BRANCH}-${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
+
+                    echo "Frontend deployment branch: ${env.DEPLOY_BRANCH}"
+                    echo "Frontend deployment commit: ${env.GIT_COMMIT_SHORT}"
+                    publishFrontendEvent('Pipeline', 'PIPELINE_STARTED')
+                }
+            }
+        }
+
+        // 변경 감지 조건은 이 부모 스테이지 한 곳에서만 관리한다.
+        // 하위 스테이지는 함께 실행되거나 함께 스킵되어야 하므로 개별 when을 두지 않는다.
+        stage('Frontend Pipeline') {
+            when {
+                anyOf {
+                    expression { currentBuild.number == 1 }
+                    expression { params.FORCE_DEPLOY }
+                    changeset 'frontend/**'
+                    changeset 'scripts/deploy-frontend.sh'
+                    changeset 'scripts/test-deploy-frontend.sh'
+                    changeset 'scripts/collect-deploy-diagnostics.sh'
+                    changeset 'scripts/check-diagnostics-secrets.sh'
+                    changeset 'scripts/publish-deploy-event.sh'
+                    changeset 'Jenkinsfile.frontend'
+
+                    // changeset은 "직전 빌드 이후"를 기준으로 판정하므로,
+                    // 프론트엔드 변경이 든 빌드가 Deploy 전에 실패하면 그
+                    // 변경은 다음 빌드에서 스킵되어 배포되지 않은 채 남는다.
+                    // 실제 배포된 커밋과 비교해 빌드 이력이 아니라 배포 상태를
+                    // 기준으로 게이팅한다.
+                    expression {
+                        def deployedCommit = sh(
+                            script: '''
+                                docker inspect \
+                                  --format '{{range .Config.Env}}{{println .}}{{end}}' \
+                                  frontend-app 2>/dev/null |
+                                  sed -n 's/^DEPLOY_COMMIT=//p' |
+                                  head -n 1
+                            ''',
+                            returnStdout: true
+                        ).trim()
+
+                        if (deployedCommit != env.GIT_COMMIT_SHORT) {
+                            echo "배포된 커밋(${deployedCommit ?: '없음'})이 " +
+                                "현재 커밋(${env.GIT_COMMIT_SHORT})과 달라 배포를 진행합니다."
+                            return true
+                        }
+
+                        return false
+                    }
+                }
+            }
+
+            stages {
+                // Jenkins 호스트에 Node나 pnpm을 설치하지 않기 위해 검증도
+                // 컨테이너 안에서 실행한다. deps 레이어는 배포 이미지 빌드와 공유된다.
+                stage('Frontend Verify') {
+                    steps {
+                        // Jenkins가 컨테이너로 돌고 Docker 데몬은 호스트 것이므로
+                        // -v "$WORKSPACE/..."는 호스트 파일시스템 경로로 해석되어
+                        // 리포트가 워크스페이스에 도착하지 않는다. 볼륨 대신
+                        // docker cp로 컨테이너 파일시스템에서 직접 꺼낸다.
+                        sh '''
+                            mkdir -p frontend/build/test-results
+                            docker build \
+                              --pull \
+                              --progress=plain \
+                              --target verify \
+                              -t "$FRONTEND_VERIFY_IMAGE_TAG" \
+                              frontend
+
+                            cid="$(docker create --network none "$FRONTEND_VERIFY_IMAGE_TAG")"
+                            trap 'docker rm -f "$cid" >/dev/null 2>&1' EXIT
+
+                            verify_rc=0
+                            docker start -a "$cid" || verify_rc=$?
+
+                            docker cp "$cid:/reports/." frontend/build/test-results/ || true
+
+                            exit "$verify_rc"
+                        '''
+                    }
+
+                    post {
+                        always {
+                            junit(
+                                testResults:
+                                    'frontend/build/test-results/*.xml',
+                                allowEmptyResults: true
+                            )
+                            // 검증이 끝나면 버려도 되는 산출물이다. 남겨두면
+                            // 빌드마다 이미지가 하나씩 호스트에 쌓인다.
+                            sh 'docker rmi -f "$FRONTEND_VERIFY_IMAGE_TAG" || true'
+                        }
+                        success {
+                            script {
+                                publishFrontendEvent('Frontend verify', 'TEST_SUCCEEDED')
+                            }
+                        }
+                        failure {
+                            script {
+                                publishFrontendEvent('Frontend verify', 'TEST_FAILED', 'ERROR')
+                            }
+                        }
+                    }
+                }
+
+                stage('Build Frontend Image') {
+                    steps {
+                        sh '''
+                            docker build \
+                              --pull \
+                              --progress=plain \
+                              --build-arg "VITE_API_BASE_URL=$FRONTEND_API_BASE_URL" \
+                              -t "$FRONTEND_IMAGE_TAG" \
+                              frontend
+                        '''
+                    }
+                    post {
+                        success {
+                            script {
+                                publishFrontendEvent('Frontend image build', 'BUILD_SUCCEEDED')
+                            }
+                        }
+                        failure {
+                            script {
+                                publishFrontendEvent('Frontend image build', 'BUILD_FAILED', 'ERROR')
+                            }
+                        }
+                    }
+                }
+
+                stage('Deploy Frontend') {
+                    steps {
+                        script {
+                            publishFrontendEvent('Frontend deploy', 'DEPLOY_STARTED')
+                        }
+                        sh '''
+                            set -euo pipefail
+                            diagnostics_dir="$WORKSPACE/deploy-diagnostics/frontend"
+                            cleanup_deploy() {
+                              result=$?
+                              trap - EXIT
+                              if [ -d "$diagnostics_dir" ] &&
+                                 ! ./scripts/check-diagnostics-secrets.sh "$diagnostics_dir"; then
+                                result=1
+                              fi
+                              exit "$result"
+                            }
+                            trap cleanup_deploy EXIT
+
+                            ./scripts/deploy-frontend.sh \
+                              "$DEPLOY_BRANCH" \
+                              "$FRONTEND_IMAGE_TAG" \
+                              "$GIT_COMMIT_SHORT" \
+                              "$diagnostics_dir"
+                        '''
+                    }
+
+                    post {
+                        success {
+                            script {
+                                publishFrontendEvent('Frontend deploy', 'DEPLOY_SUCCEEDED')
+                            }
+                            // buildDiscarder는 Jenkins 빌드 기록만 지우므로
+                            // 이미지는 별도로 정리한다. 롤백 대상은 남긴다.
+                            // 실행 중인 컨테이너의 이미지는 삭제되지 않는다.
+                            sh '''
+                                keep=$((FRONTEND_IMAGE_KEEP + 1))
+
+                                # 캐시 재사용으로 재배포된 이미지는 CreatedAt이
+                                # 옛날일 수 있어 정리 대상에 들어간다. 실행 중인
+                                # 이미지는 태그가 사라지면 롤백 대상에서 빠지므로
+                                # 목록에서 명시적으로 제외한다.
+                                current="$(
+                                  docker inspect \
+                                    --format '{{.Config.Image}}' \
+                                    frontend-app 2>/dev/null || true
+                                )"
+
+                                docker images \
+                                  --filter "reference=$FRONTEND_IMAGE:*" \
+                                  --format '{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}' |
+                                  sort -r |
+                                  tail -n "+$keep" |
+                                  cut -f2 |
+                                  grep -vFx "$current" |
+                                  xargs -r docker rmi -f || true
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts(
+                artifacts: 'deploy-diagnostics/frontend/**',
+                allowEmptyArchive: true
+            )
+        }
+        success {
+            echo "Frontend pipeline completed: ${env.FRONTEND_IMAGE_TAG}"
+            script {
+                publishFrontendEvent('Pipeline', 'PIPELINE_SUCCEEDED')
+            }
+        }
+
+        failure {
+            echo 'Frontend build or deployment failed.'
+            script {
+                publishFrontendEvent('Pipeline', 'PIPELINE_FAILED', 'ERROR')
+            }
+        }
+
+        cleanup {
+            deleteDir()
+        }
+    }
+}

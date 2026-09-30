@@ -1,0 +1,62 @@
+// AI 코드리뷰 전용 파이프라인
+// - 노트북 에이전트(label: ai-review-laptop)에서만 실행
+// - 기존 빌드/배포 잡과 완전히 분리 (리뷰 실패가 CI에 영향 없음)
+pipeline {
+    agent { label 'ai-review-laptop' }
+
+    options {
+        disableConcurrentBuilds()          // 리뷰 잡 동시 실행 방지 (구독 한도 보호)
+        timeout(time: 20, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+    }
+
+    // 트리거는 잡 설정 UI에서 관리한다 (여기에 두지 않는 이유):
+    // 선언형 triggers 블록은 빌드마다 Jenkinsfile 기준으로 재적용되는데
+    // 웹훅 Secret token은 Jenkinsfile로 표현할 수 없어 매 빌드마다 초기화된다.
+    // UI 설정값 (기존 triggers 블록과 동일):
+    //   Push events                     : 해제
+    //   Merge request events            : 체크
+    //   Rebuild open MRs                : On push to source branch
+    //   Accepted / Closed MR events     : 해제
+    //   Allowed branches                : Allow all branches to trigger this job
+    //   Advanced > Secret token         : Generate (GitLab 웹훅에 같은 값 입력)
+
+    environment {
+        GITLAB_URL   = 'https://gitlab.example.com'
+        GITLAB_TOKEN = credentials('gitlab-review-bot-token') // api scope PAT
+        // CLAUDE_MODEL = 'sonnet'  // 필요 시 모델 지정
+    }
+
+    stages {
+        stage('AI Review') {
+            when {
+                expression { env.gitlabMergeRequestIid?.trim() }
+            }
+            steps {
+                // checkout 스텝을 두지 않는다. 'Pipeline script from SCM'을 쓰면 Jenkins가
+                // 'Declarative: Checkout SCM' 스테이지를 자동으로 붙여 워크스페이스에
+                // 저장소를 이미 받아 놓기 때문에, 여기서 또 하면 fetch가 두 번 돈다.
+                // (options에 skipDefaultCheckout()을 추가한다면 여기에 checkout scm이 필요하다.)
+                // 리뷰 대상 소스는 어차피 GitLab API로 받으므로 develop 체크아웃으로 충분하다.
+                script {
+                    // 노트북 에이전트가 윈도우라 bat 스텝을 쓴다.
+                    // 기본값 대체는 bash 문법 대신 Groovy에서 처리.
+                    def projectId = env.gitlabMergeRequestTargetProjectId?.trim() ?: env.gitlabProjectId
+                    bat "python scripts\\ai_review.py --project-id \"${projectId}\" --mr-iid \"${env.gitlabMergeRequestIid}\""
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            // 파싱 실패 시 스크립트가 남긴 모델 원본 응답을 아티팩트로 보관한다.
+            // 워크스페이스는 다음 빌드에서 덮어써지므로 여기서 건져둬야 원인을 볼 수 있다.
+            archiveArtifacts artifacts: 'ai-review-raw-output.txt', allowEmptyArchive: true
+            echo '''AI 리뷰 실패 — MR 머지에는 영향 없음. 콘솔 로그의 실패 지점을 먼저 확인하세요.
+- "claude 실행 실패" / "claude 오류 응답" : 노트북 에이전트의 claude 로그인 상태
+- "출력을 JSON으로 읽지 못했습니다"      : 이 빌드의 ai-review-raw-output.txt 아티팩트
+- 그 밖의 GitLab API 오류               : gitlab-review-bot-token 만료·scope(api)'''
+        }
+    }
+}

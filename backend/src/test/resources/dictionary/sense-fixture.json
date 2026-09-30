@@ -1,0 +1,46 @@
+{
+  "LexicalResource": {
+    "Lexicon": {
+      "LexicalEntry": [
+        {
+          "Lemma": {"feat": {"att": "writtenForm", "val": "가다"}},
+          "feat": [
+            {"att": "partOfSpeech", "val": "동사"}
+          ],
+          "Sense": [
+            {
+              "feat": [
+                {"att": "definition", "val": "한 곳에서 다른 곳으로 이동하다."}
+              ],
+              "SenseExample": [
+                {"feat": [
+                  {"att": "type", "val": "구"},
+                  {"att": "example", "val": "학교에 가다."}
+                ]}
+              ],
+              "Equivalent": [{"feat": [{"att": "definition", "val": "must not be selected"}]}]
+            },
+            {
+              "feat": {"att": "definition", "val": "어떤 상태에 이르다."}
+            },
+            {
+              "feat": {"att": "definition", "val": "어떤 상태에 이르다."}
+            }
+          ]
+        },
+        {
+          "Lemma": {"feat": {"att": "writtenForm", "val": "눈"}},
+          "feat": [{"att": "partOfSpeech", "val": "명사"}],
+          "Sense": {
+            "feat": [{"att": "definition", "val": "하늘에서 내리는 얼음 결정."}]
+          }
+        },
+        {
+          "Lemma": {"feat": {"att": "writtenForm", "val": "버리다"}},
+          "feat": [{"att": "partOfSpeech", "val": "동사"}],
+          "Sense": {"feat": [{"att": "definition", "val": "   "}]}
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-labelledby="title description">
+  <title id="title">보스 페이즈 이미지 준비 중</title>
+  <desc id="description">보라색 배경 위에 방패 모양이 있는 시스템 플레이스홀더</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#292524"/>
+      <stop offset="1" stop-color="#6d28d9"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="360" fill="url(#background)"/>
+  <path d="M320 80 430 122v75c0 71-45 126-110 158-65-32-110-87-110-158v-75z" fill="#fff" opacity=".16"/>
+  <path d="m277 211 29 29 62-72" fill="none" stroke="#ddd6fe" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

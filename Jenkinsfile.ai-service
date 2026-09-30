@@ -1,0 +1,287 @@
+def publishAiEvent(String stageName, String status, String level = 'INFO') {
+    if (!fileExists('scripts/publish-deploy-event.sh')) {
+        echo "Deployment event skipped before checkout: ${status}"
+        return
+    }
+    def payload = groovy.json.JsonOutput.toJson([
+        deploy_id: env.DEPLOY_ID ?: 'unknown',
+        commit: env.GIT_COMMIT_SHORT ?: 'unknown',
+        pipeline: 'ai-service',
+        pipeline_stage: stageName,
+        status: status,
+        jenkins_url: env.BUILD_URL ?: 'unknown',
+        environment: env.DEPLOY_BRANCH ?: 'unknown',
+        level: level
+    ])
+    def shellPayload = payload.replace("'", "'\"'\"'")
+    sh "printf '%s' '${shellPayload}' | ./scripts/publish-deploy-event.sh"
+}
+
+pipeline {
+    agent any
+
+    options {
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        timeout(time: 20, unit: 'MINUTES')
+        timestamps()
+    }
+
+    parameters {
+        booleanParam(
+            name: 'FORCE_DEPLOY',
+            defaultValue: false,
+            description: 'Run AI Service test, build, and deployment even when no AI Service path changed.'
+        )
+    }
+
+    environment {
+        AI_SERVICE_IMAGE = 'c206-ai-service'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    def scmVars = checkout scm
+                    def gitBranch = scmVars.GIT_BRANCH
+
+                    if (!gitBranch) {
+                        error("Unable to determine deployment branch from SCM: ${scmVars}")
+                    }
+
+                    env.DEPLOY_BRANCH = gitBranch
+                        .replaceFirst(/^refs\/remotes\/origin\//, '')
+                        .replaceFirst(/^origin\//, '')
+
+                    if (!(env.DEPLOY_BRANCH in ['main', 'develop'])) {
+                        error("Unsupported deployment branch: ${env.DEPLOY_BRANCH}")
+                    }
+
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short=8 HEAD',
+                        returnStdout: true
+                    ).trim()
+
+                    env.AI_SERVICE_IMAGE_TAG =
+                        "${env.AI_SERVICE_IMAGE}:${env.DEPLOY_BRANCH}-${env.GIT_COMMIT_SHORT}"
+
+                    env.AI_SERVICE_TEST_IMAGE_TAG =
+                        "${env.AI_SERVICE_IMAGE_TAG}-test"
+
+                    env.DEPLOY_ID =
+                        "${env.DEPLOY_BRANCH}-${env.BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
+
+                    echo "AI Service deployment branch: ${env.DEPLOY_BRANCH}"
+                    echo "AI Service deployment commit: ${env.GIT_COMMIT_SHORT}"
+                    publishAiEvent('Pipeline', 'PIPELINE_STARTED')
+                }
+            }
+        }
+
+        // 변경 감지 조건은 이 부모 스테이지 한 곳에서만 관리한다.
+        // 하위 스테이지는 함께 실행되거나 함께 스킵되어야 하므로 개별 when을 두지 않는다.
+        stage('AI Service Pipeline') {
+            when {
+                anyOf {
+                    expression { currentBuild.number == 1 }
+                    expression { params.FORCE_DEPLOY }
+                    changeset 'ai-service/**'
+                    changeset 'scripts/deploy-ai-service.sh'
+                    changeset 'scripts/test-deploy-ai-service.sh'
+                    changeset 'scripts/collect-deploy-diagnostics.sh'
+                    changeset 'scripts/check-diagnostics-secrets.sh'
+                    changeset 'scripts/publish-deploy-event.sh'
+                    changeset 'Jenkinsfile.ai-service'
+                }
+            }
+
+            stages {
+                stage('AI Service Test') {
+                    steps {
+                        sh '''
+                            mkdir -p ai-service/build/test-results
+                            docker build \
+                              --pull \
+                              --progress=plain \
+                              -t "$AI_SERVICE_TEST_IMAGE_TAG" \
+                              -f ai-service/Dockerfile.test \
+                              ai-service
+                            docker run --rm \
+                              --network none \
+                              -v "$WORKSPACE/ai-service/build/test-results:/reports" \
+                              "$AI_SERVICE_TEST_IMAGE_TAG"
+                        '''
+                    }
+
+                    post {
+                        always {
+                            junit(
+                                testResults:
+                                    'ai-service/build/test-results/*.xml',
+                                allowEmptyResults: true
+                            )
+                        }
+                        success {
+                            script {
+                                publishAiEvent('AI Service test', 'TEST_SUCCEEDED')
+                            }
+                        }
+                        failure {
+                            script {
+                                publishAiEvent('AI Service test', 'TEST_FAILED', 'ERROR')
+                            }
+                        }
+                    }
+                }
+
+                stage('Build AI Service Image') {
+                    steps {
+                        sh '''
+                            docker build \
+                              --pull \
+                              --progress=plain \
+                              -t "$AI_SERVICE_IMAGE_TAG" \
+                              ai-service
+                        '''
+                    }
+                    post {
+                        success {
+                            script {
+                                publishAiEvent('AI Service image build', 'BUILD_SUCCEEDED')
+                            }
+                        }
+                        failure {
+                            script {
+                                publishAiEvent('AI Service image build', 'BUILD_FAILED', 'ERROR')
+                            }
+                        }
+                    }
+                }
+
+                stage('Deploy AI Service') {
+                    steps {
+                        script {
+                            publishAiEvent('AI Service deploy', 'DEPLOY_STARTED')
+                        }
+                        withCredentials([
+                            string(
+                                credentialsId: 'gms-api-key',
+                                variable: 'LLM_API_KEY'
+                            ),
+                            usernamePassword(
+                                credentialsId: 'develop-rabbitmq',
+                                usernameVariable: 'RABBITMQ_USER',
+                                passwordVariable: 'RABBITMQ_PASSWORD'
+                            ),
+                            string(
+                                credentialsId: 'develop-ai-readonly-db-password',
+                                variable: 'BOOK_DB_PASSWORD'
+                            )
+                        ]) {
+                            sh '''
+                                set +x
+                                umask 077
+                                runtime_env="$(mktemp)"
+                                diagnostics_dir="$WORKSPACE/deploy-diagnostics/ai-service"
+                                cleanup_deploy() {
+                                  result=$?
+                                  trap - EXIT
+                                  if [ -d "$diagnostics_dir" ] &&
+                                     ! ./scripts/check-diagnostics-secrets.sh "$diagnostics_dir"; then
+                                    result=1
+                                  fi
+                                  rm -f "$runtime_env"
+                                  exit "$result"
+                                }
+                                trap cleanup_deploy EXIT
+
+                                {
+                                  printf '%s\n' \
+                                    "APP_ENV=$DEPLOY_BRANCH" \
+                                    'LOG_LEVEL=INFO' \
+                                    'LLM_PROVIDER=gemini-gms' \
+                                    "LLM_API_KEY=$LLM_API_KEY" \
+                                    'LLM_MODEL=gemini-3.5-flash' \
+                                    'LLM_BASE_URL=https://llm-gateway.example.com/gmsapi/generativelanguage.googleapis.com/v1beta' \
+                                    'LLM_CONNECT_TIMEOUT_SECONDS=2' \
+                                    'LLM_READ_TIMEOUT_SECONDS=20' \
+                                    'LLM_WRITE_TIMEOUT_SECONDS=5' \
+                                    'LLM_POOL_TIMEOUT_SECONDS=2' \
+                                    'LLM_REQUEST_BUDGET_SECONDS=55' \
+                                    'LLM_MAX_CONCURRENCY=5' \
+                                    'LLM_MAX_RETRIES=1' \
+                                    'LLM_RETRY_BASE_DELAY_SECONDS=0.25' \
+                                    'LLM_RETRY_MAX_DELAY_SECONDS=2' \
+                                    'LLM_TEMPERATURE=0.1' \
+                                    'LLM_MAX_OUTPUT_TOKENS=8192' \
+                                    'PROMPT_VERSION=prompt-v1' \
+                                    'RUBRIC_VERSION=rubric-v1' \
+                                    'EMBEDDING_MODEL=text-embedding-3-small' \
+                                    'EMBEDDING_BASE_URL=https://llm-gateway.example.com/gmsapi/api.openai.com/v1' \
+                                    "EMBEDDING_API_KEY=$LLM_API_KEY" \
+                                    'EMBEDDING_DIMENSIONS=768' \
+                                    'EMBEDDING_REQUEST_BUDGET_SECONDS=3' \
+                                    'BOOK_LLM_MODEL=gemini-2.5-pro' \
+                                    'BOOK_MQ_ENABLED=true' \
+                                    'EVALUATION_MQ_ENABLED=true' \
+                                    'RABBITMQ_HOST=rabbitmq' \
+                                    'RABBITMQ_PORT=5672' \
+                                    "RABBITMQ_USER=$RABBITMQ_USER" \
+                                    "RABBITMQ_PASSWORD=$RABBITMQ_PASSWORD" \
+                                    'RABBITMQ_VHOST=/' \
+                                    'BOOK_DB_HOST=postgres' \
+                                    'BOOK_DB_PORT=5432' \
+                                    'BOOK_DB_NAME=mvp_backend' \
+                                    'BOOK_DB_USER=mvp_ai_readonly' \
+                                    "BOOK_DB_PASSWORD=$BOOK_DB_PASSWORD"
+                                } >"$runtime_env"
+
+                                ./scripts/deploy-ai-service.sh \
+                                  "$DEPLOY_BRANCH" \
+                                  "$AI_SERVICE_IMAGE_TAG" \
+                                  "$GIT_COMMIT_SHORT" \
+                                  "$runtime_env" \
+                                  "$diagnostics_dir"
+                            '''
+                        }
+                    }
+                    post {
+                        success {
+                            script {
+                                publishAiEvent('AI Service deploy', 'DEPLOY_SUCCEEDED')
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts(
+                artifacts: 'deploy-diagnostics/ai-service/**',
+                allowEmptyArchive: true
+            )
+        }
+        success {
+            echo "AI Service pipeline completed: ${env.AI_SERVICE_IMAGE_TAG}"
+            script {
+                publishAiEvent('Pipeline', 'PIPELINE_SUCCEEDED')
+            }
+        }
+
+        failure {
+            echo 'AI Service build or deployment failed.'
+            script {
+                publishAiEvent('Pipeline', 'PIPELINE_FAILED', 'ERROR')
+            }
+        }
+
+        cleanup {
+            deleteDir()
+        }
+    }
+}

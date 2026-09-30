@@ -1,0 +1,5 @@
+.gradle
+build/*
+!build/libs/
+!build/libs/app.jar
+README.md

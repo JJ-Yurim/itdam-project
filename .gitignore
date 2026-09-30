@@ -1,0 +1,8 @@
+.worktrees/
+.idea/
+# 부하 테스트 산출물(k6 로그·요약·락 샘플)이 쌓이는 곳. 커밋 대상이 아니다.
+/build/
+request.json
+settings.json
+ai-review-raw-output.txt
+node_modules/

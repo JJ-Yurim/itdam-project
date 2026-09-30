@@ -1,0 +1,586 @@
+@import 'tailwindcss';
+
+/* 잇담 브랜드 서체. 가변 폰트 하나로 100~900 굵기를 모두 처리한다. */
+@font-face {
+  font-family: 'Pretendard Variable';
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+  src: url('/fonts/PretendardVariable.woff2') format('woff2-variations');
+}
+
+/* 잇담 디자인 토큰.
+   - 색은 새로 만들지 않고, 화면 전반에서 이미 쓰이던 violet/stone 계열을
+     의미 있는 이름으로 성문화한 것이다. (brand=주 행동, ink=본문, paper=지면)
+   - radius는 컨트롤(control) < 카드(card) < 대형 패널(panel) 3단만 쓴다. */
+@theme {
+  --font-sans:
+    'Pretendard Variable', Pretendard, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    sans-serif;
+
+  --color-brand: var(--color-violet-600);
+  --color-brand-strong: var(--color-violet-700);
+  --color-brand-deep: var(--color-violet-800);
+  --color-brand-soft: var(--color-violet-50);
+  --color-brand-muted: var(--color-violet-100);
+
+  --color-ink: var(--color-stone-900);
+  --color-ink-soft: var(--color-stone-600);
+  --color-ink-muted: var(--color-stone-500);
+
+  --color-paper: #f7f5f2;
+  --color-page: #fbf8f3;
+
+  --color-like: var(--color-rose-600);
+
+  --radius-control: var(--radius-lg);
+  /* 큰 CTA는 컨트롤보다 한 단계 부드러운 모서리를 쓴다. 값을 바꿀 때 lg 버튼도 함께 따라온다. */
+  --radius-control-lg: var(--radius-xl);
+  --radius-card: var(--radius-2xl);
+  --radius-panel: var(--radius-3xl);
+
+  /* 모션 3단. 이보다 긴 모션은 게임 연출(HP 바, 카드 뒤집기)에만 허용한다. */
+  --duration-micro: 120ms;
+  --duration-ui: 200ms;
+  --duration-overlay: 280ms;
+}
+
+:root {
+  font-family: var(--font-sans);
+  color: #24201d;
+  background: #f7f5f2;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  min-height: 100%;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* 콘텐츠 길이에 따라 세로 스크롤바가 생겼다 사라지며
+     가운데 컬럼이 좌우로 밀리지 않도록 스크롤바 공간을 항상 예약한다. */
+  scrollbar-gutter: stable;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.app-bottom-navigation {
+  padding-bottom: max(0.375rem, env(safe-area-inset-bottom));
+}
+
+/* 배경 이미지는 요소의 유틸리티 클래스가 담당한다. 여기서는 데스크톱에서만
+   그 이미지를 그래디언트로 덮어써, 모바일 배경은 손대지 않은 채로 둔다. */
+@media (min-width: 1024px) {
+  .app-background {
+    background:
+      radial-gradient(circle at 12% 12%, rgb(221 214 254 / 72%), transparent 30rem),
+      radial-gradient(circle at 88% 18%, rgb(254 226 226 / 58%), transparent 28rem),
+      radial-gradient(circle at 74% 90%, rgb(224 231 255 / 64%), transparent 32rem), #faf8ff;
+  }
+
+  .app-bottom-navigation {
+    padding-bottom: 0;
+  }
+}
+
+/* 등장 모션 공통 규약: opacity + 4px 상승만 쓴다. 이동 거리를 키우거나
+   scale·bounce를 더하지 않는다. 모션 최소화 설정에서는 즉시 표시한다. */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* fill-mode는 backwards만 쓴다. forwards(both)로 두면 마지막 키프레임의
+   transform: translateY(0)이 끝난 뒤에도 남아, 이 요소가 자손 position: fixed의
+   containing block이 되어 고정 요소가 뷰포트를 기준으로 잡히지 않는다. */
+.motion-rise {
+  animation: rise-in var(--duration-ui) ease-out backwards;
+}
+
+.motion-rise-overlay {
+  animation: rise-in var(--duration-overlay) ease-out backwards;
+}
+
+/* AI 평가의 실제 완료율은 알 수 없으므로, 숫자 진행률 대신 계속 움직이는 인디케이터로
+   작업이 멈추지 않았다는 사실만 전달한다. */
+@keyframes sentence-evaluation-progress {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(260%);
+  }
+}
+
+.sentence-evaluation-progress {
+  animation: sentence-evaluation-progress 1.5s ease-in-out infinite;
+}
+
+/* 튜토리얼 코치마크는 실제 서비스 화면을 가리지 않고 다음 행동만 강조한다. */
+@keyframes tutorial-coachmark-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 3px rgb(139 92 246 / 0.2),
+      0 0 0 7px rgb(139 92 246 / 0.08);
+  }
+  50% {
+    box-shadow:
+      0 0 0 5px rgb(139 92 246 / 0.32),
+      0 0 0 11px rgb(139 92 246 / 0.05);
+  }
+}
+
+.tutorial-spotlight {
+  border: 2px solid rgb(124 58 237);
+  background: transparent;
+  box-shadow:
+    0 0 0 3px rgb(139 92 246 / 0.2),
+    0 0 0 7px rgb(139 92 246 / 0.08);
+  animation: tutorial-coachmark-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tutorial-dami-arrive {
+  from {
+    opacity: 0;
+    transform: translate3d(18px, 12px, 0) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.tutorial-guide-backdrop {
+  background: rgb(28 25 23 / 45%);
+}
+
+.tutorial-dami-guide {
+  animation: tutorial-dami-arrive 180ms ease-out;
+}
+
+.tutorial-dami-guide--top {
+  top: calc(env(safe-area-inset-top) + 4.75rem);
+  bottom: auto;
+}
+
+.tutorial-dami-guide--bottom {
+  top: auto;
+  bottom: calc(env(safe-area-inset-bottom) + 5.5rem);
+}
+
+.tutorial-dami-guide--bottom.tutorial-dami-guide--lifted,
+.tutorial-dami-guide-button.tutorial-dami-guide--lifted {
+  bottom: calc(env(safe-area-inset-bottom) + 11.5rem);
+}
+
+.tutorial-dami-speech-tail {
+  position: absolute;
+  right: -0.55rem;
+  bottom: 2.75rem;
+  width: 1.15rem;
+  height: 1.15rem;
+  border-right: 1px solid rgb(221 214 254);
+  border-bottom: 1px solid rgb(221 214 254);
+  background: white;
+  transform: rotate(-45deg);
+}
+
+.tutorial-dami-character {
+  filter: saturate(1.05) contrast(1.03);
+}
+
+@media (min-width: 1024px) {
+  .tutorial-dami-guide--top {
+    top: 6.5rem;
+  }
+
+  .tutorial-dami-guide--bottom,
+  .tutorial-dami-guide--bottom.tutorial-dami-guide--lifted {
+    bottom: 1.5rem;
+  }
+
+  .tutorial-dami-guide--bottom.tutorial-dami-guide--lowered {
+    bottom: -1.5rem;
+  }
+
+  .tutorial-dami-guide-button.tutorial-dami-guide--lifted {
+    bottom: auto;
+  }
+
+}
+
+/* 모든 모달(dialog)의 등장을 한 규약으로 통일한다. 퇴장은 네이티브 close를 그대로 둔다.
+   퇴장 지연은 "닫았는데 남아 있는" 느낌을 줘 조작감을 해치기 때문이다. */
+@keyframes backdrop-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+dialog[open] {
+  animation: rise-in var(--duration-overlay) ease-out;
+}
+
+dialog[open]::backdrop {
+  animation: backdrop-fade var(--duration-overlay) ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-rise,
+  .motion-rise-overlay,
+  .sentence-evaluation-progress,
+  .tutorial-spotlight,
+  .tutorial-coachmark-label,
+  .tutorial-dami-guide,
+  dialog[open],
+  dialog[open]::backdrop {
+    animation: none;
+  }
+}
+
+/* --- 보스 전투 연출 ---
+   전투는 이 서비스의 게임 순간이라 일반 UI 전환보다 큰 모션을 허용한다.
+   대신 모든 연출은 클릭을 통과시키고(pointer-events: none) 1초 안에 끝나
+   문장 선택·제출을 방해하지 않는다. */
+
+/* 보스 반동은 연속 타격마다 다시 재생해야 해 battleEffects.ts의 Web Animations API가
+   담당한다. 궤적을 CSS에도 두면 한쪽만 고쳐 어긋나므로 여기에는 두지 않는다. */
+
+/* API 응답을 기다리는 동안 보스 주변에 마법이 모인다. 요청 시간이 길어져도 반복이 자연스럽다. */
+@keyframes boss-charge {
+  0%,
+  100% {
+    opacity: 0.32;
+    transform: rotate(0deg) scale(0.94);
+    box-shadow:
+      0 0 0 2px rgb(167 139 250 / 0.35),
+      0 0 18px rgb(139 92 246 / 0.28);
+  }
+  50% {
+    opacity: 0.8;
+    transform: rotate(180deg) scale(1.04);
+    box-shadow:
+      0 0 0 5px rgb(196 181 253 / 0.18),
+      0 0 28px rgb(139 92 246 / 0.42);
+  }
+}
+
+/* 보스 이미지의 왼쪽 아래에서 중앙으로 날아드는 짧은 SVG 마법탄. */
+@keyframes boss-projectile {
+  0% {
+    opacity: 0;
+    transform: translate3d(-78px, 62px, 0) rotate(-35deg) scale(0.45);
+  }
+  18% {
+    opacity: 1;
+  }
+  76% {
+    opacity: 1;
+    transform: translate3d(-10px, 8px, 0) rotate(18deg) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) rotate(35deg) scale(0.2);
+  }
+}
+
+/* 투사체가 도착한 순간 보스 영역 안에서만 짧게 밝아진다. */
+@keyframes boss-hit-flash {
+  0%,
+  20% {
+    opacity: 0;
+    transform: scale(0.88);
+  }
+  42% {
+    opacity: 0.85;
+    transform: scale(1.03);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.12);
+  }
+}
+
+/* 충돌 지점에서 별빛 파티클이 여덟 방향으로 퍼진다. */
+@keyframes boss-particle-burst {
+  0%,
+  18% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.2);
+  }
+  38% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--particle-x)), calc(-50% + var(--particle-y))) scale(0);
+  }
+}
+
+/* 타격 지점에서 퍼지는 충격 링. */
+@keyframes boss-impact {
+  from {
+    opacity: 0.45;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.22);
+  }
+}
+
+/* 데미지 수치가 솟아올라 사라진다. */
+@keyframes boss-damage-float {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.92);
+  }
+  18% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-26px) scale(1);
+  }
+}
+
+/* 방금 깎인 HP 구간을 잔상으로 남긴다. HP 바가 줄어드는 700ms 동안은 그대로
+   보이게 두었다가 사라져, 얼마나 깎였는지 눈으로 읽을 수 있게 한다. */
+@keyframes boss-hp-loss {
+  0%,
+  65% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* 페이즈 돌파 배너. 잠깐 머물렀다가 스스로 사라진다. */
+@keyframes boss-phase-clear {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  12%,
+  72% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* 마지막 타격은 반동 뒤 보스가 빛으로 흩어지며 사라지고, 클리어 배너가 잠시 남는다. */
+@keyframes boss-defeat {
+  0%,
+  28% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: brightness(1);
+  }
+  42% {
+    transform: translate3d(-8px, 2px, 0) scale(1.04);
+    filter: brightness(1.8) saturate(0.7);
+  }
+  55% {
+    transform: translate3d(7px, -3px, 0) scale(1.06);
+    filter: brightness(2.2) saturate(0.45);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, -24px, 0) scale(0.62);
+    filter: brightness(2.6) saturate(0);
+  }
+}
+
+@keyframes boss-clear-banner {
+  0%,
+  18% {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 10px)) scale(0.9);
+  }
+  34%,
+  78% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% - 8px)) scale(0.98);
+  }
+}
+
+.boss-impact {
+  animation: boss-impact 460ms var(--boss-projectile-travel) ease-out forwards;
+}
+
+.boss-damage-float {
+  animation: boss-damage-float 950ms var(--boss-projectile-travel) ease-out forwards;
+}
+
+.boss-charge {
+  animation: boss-charge 900ms ease-in-out infinite;
+  background: conic-gradient(
+    from 90deg,
+    transparent,
+    rgb(167 139 250 / 0.22),
+    transparent 42%,
+    rgb(251 191 36 / 0.18),
+    transparent 72%
+  );
+}
+
+.boss-projectile {
+  top: 50%;
+  left: 50%;
+  margin-top: -1rem;
+  margin-left: -1rem;
+  color: rgb(139 92 246);
+  filter: drop-shadow(0 0 8px rgb(139 92 246 / 0.8));
+  animation: boss-projectile var(--boss-projectile-travel) cubic-bezier(0.16, 0.75, 0.28, 1)
+    forwards;
+}
+
+.boss-projectile-strong {
+  color: rgb(245 158 11);
+  filter: drop-shadow(0 0 12px rgb(245 158 11 / 0.9));
+}
+
+.boss-hit-flash {
+  animation: boss-hit-flash 480ms var(--boss-projectile-travel) ease-out forwards;
+}
+
+.boss-particle {
+  --particle-x: 0px;
+  --particle-y: 0px;
+
+  animation: boss-particle-burst 620ms var(--boss-projectile-travel) ease-out forwards;
+}
+
+.boss-particles-strong .boss-particle {
+  width: 0.65rem;
+  height: 0.65rem;
+  animation-duration: 760ms;
+}
+
+.boss-particle[data-particle='1'] {
+  --particle-x: -46px;
+  --particle-y: -38px;
+}
+.boss-particle[data-particle='2'] {
+  --particle-x: 0px;
+  --particle-y: -58px;
+}
+.boss-particle[data-particle='3'] {
+  --particle-x: 48px;
+  --particle-y: -36px;
+}
+.boss-particle[data-particle='4'] {
+  --particle-x: 58px;
+  --particle-y: 2px;
+}
+.boss-particle[data-particle='5'] {
+  --particle-x: 42px;
+  --particle-y: 42px;
+}
+.boss-particle[data-particle='6'] {
+  --particle-x: 0px;
+  --particle-y: 56px;
+}
+.boss-particle[data-particle='7'] {
+  --particle-x: -42px;
+  --particle-y: 40px;
+}
+.boss-particle[data-particle='8'] {
+  --particle-x: -58px;
+  --particle-y: 0px;
+}
+
+.boss-hp-loss {
+  animation: boss-hp-loss 1000ms ease-out forwards;
+}
+
+.boss-phase-clear {
+  animation: boss-phase-clear 2200ms ease-out forwards;
+}
+
+.boss-defeat {
+  animation: boss-defeat 1800ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+.boss-clear-banner {
+  animation: boss-clear-banner 1800ms ease-out forwards;
+}
+
+/* 모션을 끈 사용자에게는 잔상과 링을 재생하지 않는다(반동은 WAAPI 쪽에서 건너뛴다).
+   데미지 수치와 돌파 배너는 정보이므로 움직임 없이 그대로 보여주고 타이머로 정리한다. */
+@media (prefers-reduced-motion: reduce) {
+  .boss-impact,
+  .boss-damage-float,
+  .boss-hp-loss,
+  .boss-phase-clear {
+    animation: none;
+  }
+
+  .boss-defeat {
+    opacity: 0;
+    animation: none;
+  }
+
+  .boss-clear-banner {
+    animation: none;
+  }
+
+  .boss-charge,
+  .boss-projectile,
+  .boss-hit-flash,
+  .boss-particle {
+    display: none;
+  }
+}
+
+@layer base {
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  /* HP·점수·기여도 같은 숫자는 자리수가 바뀌어도 흔들리지 않게 고정폭 숫자를 쓴다. */
+  [data-numeric],
+  time {
+    font-variant-numeric: tabular-nums;
+  }
+}

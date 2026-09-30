@@ -1,0 +1,457 @@
+// 운영 PostgreSQL 스키마에서 생성한 ERD (Flyway V1~V16 적용 상태).
+// 스키마의 단일 출처는 backend/src/main/resources/db/migration 이며 이 파일은 그 결과를 옮긴 것이다.
+
+Project itdam {
+  database_type: 'PostgreSQL'
+}
+
+Table ai_jobs {
+  id bigint [pk, increment]
+  boss_run_id bigint [not null, ref: > boss_runs.id]
+  job_type varchar(30) [not null]
+  status varchar(20) [not null]
+  attempt_count integer [not null]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+  requested_at timestamptz
+  request_dispatched boolean [not null]
+  last_error varchar(500)
+  correlation_id varchar(36) [not null, unique]
+  model_name varchar(150)
+  prompt_version varchar(100)
+
+  Indexes {
+    (created_at) [name: 'idx_ai_jobs_pending_dispatch']  // WHERE (((status)::text = 'PENDING'::text) AND (request_dispatched = false))
+    (status) [name: 'idx_ai_jobs_status']
+    (correlation_id) [name: 'uk_ai_jobs_correlation_id', unique]
+    (boss_run_id, job_type) [name: 'uk_ai_jobs_run_type', unique]
+  }
+}
+
+Table book_bookmarks {
+  id bigint [pk, increment]
+  user_id bigint [not null, ref: > users.id]
+  book_id bigint [not null, ref: > books.id]
+  created_at timestamptz [not null]
+
+  Indexes {
+    (book_id) [name: 'idx_book_bookmarks_book']
+    (user_id, book_id) [name: 'uk_book_bookmark_user_book', unique]
+  }
+}
+
+Table book_content_likes {
+  id bigint [pk, increment]
+  user_id bigint [not null, ref: > users.id]
+  book_content_id bigint [not null, ref: > book_contents.id]
+  created_at timestamptz [not null]
+
+  Indexes {
+    (book_content_id) [name: 'idx_book_content_likes_content']
+    (user_id, book_content_id) [name: 'uk_book_content_like_user_content', unique]
+  }
+}
+
+Table book_contents {
+  id bigint [pk, increment]
+  book_id bigint [not null, ref: > books.id]
+  sequence_no integer [not null]
+  content_type varchar(20) [not null]
+  content varchar(10000) [not null]
+  author_user_id bigint [ref: > users.id]
+  source_submission_id bigint [ref: > boss_submissions.id]
+  created_at timestamptz [not null]
+
+  Indexes {
+    (author_user_id, book_id) [name: 'idx_book_contents_author_book']
+    (book_id, sequence_no) [name: 'uk_book_contents_book_sequence', unique]
+  }
+}
+
+Table book_likes {
+  id bigint [pk, increment]
+  user_id bigint [not null, ref: > users.id]
+  book_id bigint [not null, ref: > books.id]
+  created_at timestamptz [not null]
+
+  Indexes {
+    (book_id) [name: 'idx_book_likes_book']
+    (user_id, book_id) [name: 'uk_book_like_user_book', unique]
+  }
+}
+
+Table books {
+  id bigint [pk, increment]
+  boss_run_id bigint [not null, unique, ref: > boss_runs.id]
+  status varchar(20) [not null]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+  completed_at timestamptz
+  cover_image_asset_id bigint [ref: > image_assets.id]
+  body text
+  summary varchar(500)
+  visibility varchar(20) [not null, default: 'HIDDEN']
+
+  Indexes {
+    (boss_run_id) [name: 'books_boss_run_id_key', unique]
+    (cover_image_asset_id) [name: 'idx_books_cover_image_asset_id']
+    (status, visibility) [name: 'idx_books_status_visibility']
+  }
+}
+
+Table boss_moods {
+  id bigint [pk, increment]
+  boss_id bigint [not null, ref: > bosses.id]
+  mood_category_id smallint [not null, ref: > mood_categories.id]
+  mood_role varchar(30) [not null]
+  weight numeric(6,3) [not null]
+
+  Indexes {
+    (boss_id, mood_category_id, mood_role) [name: 'uk_boss_mood_category_role', unique]
+  }
+}
+
+Table boss_phase_templates {
+  id bigint [pk, increment]
+  boss_id bigint [not null, ref: > bosses.id]
+  phase_no integer [not null]
+  max_hp bigint [not null]
+  hard_min_score numeric(6,2)
+  recommended_score numeric(6,2)
+  damage_multiplier numeric(6,3) [not null]
+  image_asset_id bigint [not null, ref: > image_assets.id]
+
+  Indexes {
+    (boss_id, phase_no) [name: 'uk_boss_phase_templates_boss_phase', unique]
+  }
+}
+
+Table boss_phases {
+  id bigint [pk, increment]
+  boss_run_id bigint [not null, ref: > boss_runs.id]
+  phase_no integer [not null]
+  max_hp bigint [not null]
+  remaining_hp bigint [not null]
+  hard_min_score numeric(6,2)
+  recommended_score numeric(6,2)
+  damage_multiplier numeric(6,3) [not null]
+  status varchar(30) [not null]
+  image_asset_id bigint [ref: > image_assets.id]
+
+  Indexes {
+    (boss_run_id, phase_no) [name: 'uk_boss_run_phase_no', unique]
+  }
+}
+
+Table boss_runs {
+  id bigint [pk, increment]
+  boss_id bigint [not null, ref: > bosses.id]
+  status varchar(30) [not null]
+  current_phase_no integer [not null]
+  accumulated_damage bigint [not null]
+  started_at timestamptz
+  ends_at timestamptz
+  cleared_at timestamptz
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+
+  Indexes {
+    (status, ends_at) [name: 'idx_boss_runs_status_ends_at']
+    (boss_id) [name: 'uk_boss_runs_one_active_per_boss', unique]  // WHERE ((status)::text = 'ACTIVE'::text)
+  }
+}
+
+Table boss_submission_daily_counters {
+  id bigint [pk, increment]
+  boss_run_id bigint [not null, ref: > boss_runs.id]
+  user_id bigint [not null, ref: > users.id]
+  service_date date [not null]
+  submission_count integer [not null]
+  updated_at timestamptz [not null]
+
+  Indexes {
+    (boss_run_id, user_id, service_date) [name: 'uk_boss_submission_counter_run_user_date', unique]
+  }
+}
+
+Table boss_submissions {
+  id bigint [pk, increment]
+  boss_run_id bigint [not null, ref: > boss_runs.id]
+  boss_phase_id bigint [not null, ref: > boss_phases.id]
+  user_id bigint [not null, ref: > users.id]
+  sentence_version_id bigint [not null, ref: > sentence_versions.id]
+  service_date date [not null]
+  ai_base_score_snapshot numeric(6,2) [not null]
+  word_bonus_snapshot numeric(6,2) [not null]
+  mood_bonus_snapshot numeric(6,2) [not null]
+  weakness_bonus_snapshot numeric(6,2) [not null]
+  phase_modifier_snapshot numeric(6,3) [not null]
+  final_damage bigint [not null]
+  created_at timestamptz [not null]
+
+  Indexes {
+    (boss_phase_id) [name: 'idx_boss_submission_phase']
+    (boss_run_id, user_id, service_date) [name: 'idx_boss_submission_run_user_date']
+    (user_id, boss_run_id, created_at DESC) [name: 'idx_boss_submission_user_created_at']
+    (boss_run_id, sentence_version_id) [name: 'uk_boss_submission_run_version', unique]
+  }
+}
+
+Table bosses {
+  id bigint [pk, increment]
+  name varchar(150) [not null]
+  description text [not null]
+  status varchar(30) [not null]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+  book_cover_image_asset_id bigint [ref: > image_assets.id]
+
+  Indexes {
+    (book_cover_image_asset_id) [name: 'idx_bosses_book_cover_image_asset_id']
+  }
+}
+
+Table copyright_agreements {
+  id bigint [pk, increment]
+  version varchar(30) [not null, unique]
+  title varchar(200) [not null]
+  content text [not null]
+  active boolean [not null]
+  effective_at timestamptz [not null]
+  valid_months integer [not null]
+  created_at timestamptz [not null]
+
+  Indexes {
+    (version) [name: 'copyright_agreements_version_key', unique]
+  }
+}
+
+Table daily_word_set_items {
+  id bigint [pk, increment]
+  daily_word_set_id bigint [not null, ref: > daily_word_sets.id]
+  word_id bigint [not null, ref: > words.id]
+  position smallint [not null]
+  created_at timestamptz [not null]
+
+  Indexes {
+    (daily_word_set_id, "position") [name: 'uk_daily_word_item_set_position', unique]
+    (daily_word_set_id, word_id) [name: 'uk_daily_word_item_set_word', unique]
+  }
+}
+
+Table daily_word_sets {
+  id bigint [pk, increment]
+  user_id bigint [not null, ref: > users.id]
+  service_date date [not null]
+  created_at timestamptz [not null]
+
+  Indexes {
+    (user_id, service_date) [name: 'uk_daily_word_set_user_date', unique]
+  }
+}
+
+Table flyway_schema_history {
+  installed_rank integer [pk]
+  version varchar(50)
+  description varchar(200) [not null]
+  type varchar(20) [not null]
+  script varchar(1000) [not null]
+  checksum integer
+  installed_by varchar(100) [not null]
+  installed_on timestamp [not null, default: now()]
+  execution_time integer [not null]
+  success boolean [not null]
+
+  Indexes {
+    (success) [name: 'flyway_schema_history_s_idx']
+  }
+}
+
+Table image_assets {
+  id bigint [pk, increment]
+  storage_key varchar(500) [not null, unique]
+  content_type varchar(100) [not null]
+  byte_size bigint [not null]
+  status varchar(30) [not null]
+  created_by bigint [not null, ref: > users.id]
+  created_at timestamptz [not null]
+  purpose varchar(30) [not null]
+
+  Indexes {
+    (status, created_at) [name: 'idx_image_assets_status_created_at']
+    (storage_key) [name: 'image_assets_storage_key_key', unique]
+  }
+}
+
+Table mood_categories {
+  id smallint [pk, increment]
+  code varchar(30) [not null, unique]
+  name_ko varchar(50) [not null]
+  is_active boolean [not null]
+
+  Indexes {
+    (code) [name: 'mood_categories_code_key', unique]
+  }
+}
+
+Table sentence_embeddings {
+  id bigint [pk, increment]
+  sentence_version_id bigint [not null, unique, ref: > sentence_versions.id]
+  embedding vector [not null]
+  model_name varchar(100) [not null]
+  dimension integer [not null]
+  created_at timestamptz [not null]
+
+  Indexes {
+    (sentence_version_id) [name: 'sentence_embeddings_sentence_version_id_key', unique]
+  }
+}
+
+Table sentence_evaluations {
+  id bigint [pk, increment]
+  sentence_version_id bigint [not null, unique, ref: > sentence_versions.id]
+  safety_status varchar(30) [not null]
+  safety_reason text
+  completeness_score integer
+  originality_score integer
+  expression_score integer
+  imagery_score integer
+  emotional_impact_score integer
+  base_score numeric(6,2)
+  word_bonus numeric(6,2) [not null]
+  game_base_attack numeric(6,2) [not null]
+  overall_feedback text
+  model_name varchar(100)
+  prompt_version varchar(50)
+  rubric_version varchar(50)
+  evaluated_at timestamptz [not null]
+
+  Indexes {
+    (sentence_version_id) [name: 'sentence_evaluations_sentence_version_id_key', unique]
+  }
+}
+
+Table sentence_moods {
+  id bigint [pk, increment]
+  sentence_version_id bigint [not null, ref: > sentence_versions.id]
+  mood_category_id smallint [not null, ref: > mood_categories.id]
+  strength numeric(4,3) [not null]
+  rank smallint [not null]
+
+  Indexes {
+    (sentence_version_id, mood_category_id) [name: 'uk_sentence_mood_category', unique]
+    (sentence_version_id, rank) [name: 'uk_sentence_mood_rank', unique]
+  }
+}
+
+Table sentence_used_daily_words {
+  id bigint [pk, increment]
+  sentence_version_id bigint [not null, ref: > sentence_versions.id]
+  daily_word_set_item_id bigint [not null, ref: > daily_word_set_items.id]
+  created_at timestamptz [not null]
+
+  Indexes {
+    (sentence_version_id, daily_word_set_item_id) [name: 'uk_sentence_used_daily_word', unique]
+  }
+}
+
+Table sentence_versions {
+  id bigint [pk, increment]
+  sentence_id bigint [not null, ref: > sentences.id]
+  version_no integer [not null]
+  content text [not null]
+  evaluation_status varchar(30) [not null]
+  created_at timestamptz [not null]
+  confirmed_at timestamptz
+  evaluation_started_at timestamptz
+  evaluation_dispatched boolean [not null, default: false]
+  evaluation_correlation_id uuid
+
+  Indexes {
+    (evaluation_status) [name: 'idx_sentence_version_status']
+    (evaluation_started_at) [name: 'idx_sentence_versions_undispatched_evaluation']  // WHERE (((evaluation_status)::text = 'EVALUATING'::text) AND (evaluation_dispatched = false))
+    (sentence_id, version_no) [name: 'uk_sentence_version_no', unique]
+  }
+}
+
+Table sentences {
+  id bigint [pk, increment]
+  user_id bigint [not null, ref: > users.id]
+  status varchar(30) [not null]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+  deleted_at timestamptz
+}
+
+Table user_daily_evaluation_usage {
+  id bigint [pk, increment]
+  user_id bigint [not null, ref: > users.id]
+  service_date date [not null]
+  used_count integer [not null]
+  updated_at timestamptz [not null]
+
+  Indexes {
+    (user_id, service_date) [name: 'uk_user_daily_evaluation_usage', unique]
+  }
+}
+
+Table users {
+  id bigint [pk, increment]
+  email varchar(255) [not null, unique]
+  password_hash varchar(255)
+  nickname varchar(100) [not null, unique]
+  status varchar(30) [not null]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+  role varchar(20) [not null, default: 'USER']
+  provider varchar(20) [not null, default: 'LOCAL']
+  provider_id varchar(255)
+  copyright_agreement_id bigint [ref: > copyright_agreements.id]
+  copyright_agreed_at timestamptz
+  copyright_agreement_expires_at timestamptz
+
+  Indexes {
+    (copyright_agreement_id) [name: 'idx_users_copyright_agreement_id']
+    (provider, provider_id) [name: 'uk_users_provider_provider_id', unique]
+    (email) [name: 'users_email_key', unique]
+    (nickname) [name: 'users_nickname_key', unique]
+  }
+}
+
+Table weekly_sentence_set_items {
+  id bigint [pk, increment]
+  weekly_sentence_set_id bigint [not null, ref: > weekly_sentence_sets.id]
+  book_content_id bigint [not null, ref: > book_contents.id]
+  position integer [not null]
+  created_at timestamptz [not null]
+
+  Indexes {
+    (weekly_sentence_set_id, book_content_id) [name: 'uk_weekly_sentence_item_set_content', unique]
+    (weekly_sentence_set_id, "position") [name: 'uk_weekly_sentence_item_set_position', unique]
+  }
+}
+
+Table weekly_sentence_sets {
+  id bigint [pk, increment]
+  week_start_date date [not null, unique]
+  created_at timestamptz [not null]
+
+  Indexes {
+    (week_start_date) [name: 'uk_weekly_sentence_set_week', unique]
+  }
+}
+
+Table words {
+  id bigint [pk, increment]
+  word varchar(100) [not null]
+  part_of_speech varchar(50) [not null]
+  definition text [not null]
+  example text
+  is_active boolean [not null]
+  created_at timestamptz [not null]
+
+  Indexes {
+    (is_active, id) [name: 'idx_words_active_id']
+  }
+}
+
