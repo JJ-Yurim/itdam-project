@@ -20,7 +20,7 @@ services:
       POSTGRES_USER: ${LOADTEST_POSTGRES_USER:-loadtest}
       POSTGRES_PASSWORD: ${LOADTEST_POSTGRES_PASSWORD:-loadtest}
     ports:
-      - "${LOADTEST_POSTGRES_PORT:-55432}:5432"
+      - "127.0.0.1:${LOADTEST_POSTGRES_PORT:-55432}:5432"
     # 측정 데이터는 재현 가능한 시드라 영속화하지 않는다. 컨테이너를 내리면 함께 사라진다.
     tmpfs:
       - /var/lib/postgresql/data
