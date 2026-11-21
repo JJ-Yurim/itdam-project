@@ -41,7 +41,7 @@ export GRAFANA_ADMIN_PASSWORD="$validation_password"
 docker compose --env-file "$env_file" -f "$compose_file" config >"$rendered"
 unset GRAFANA_ADMIN_PASSWORD
 
-for image in grafana/loki:3.7.0 grafana/alloy:v1.18.0 grafana/grafana:12.4.0; do
+for image in grafana/loki:3.7.0 grafana/alloy:v1.18.0 grafana/grafana:12.4.15; do
   grep -Fxq "    image: $image" "$rendered" || fail "missing exact image: $image"
 done
 
